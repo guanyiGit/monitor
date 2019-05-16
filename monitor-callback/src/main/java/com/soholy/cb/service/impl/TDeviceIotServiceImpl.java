@@ -1,0 +1,291 @@
+package com.soholy.cb.service.impl;
+
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONArray;
+import com.alibaba.fastjson.JSONObject;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.soholy.cb.common.ConstantIot;
+import com.soholy.cb.config.IotPropertiesConfig;
+import com.soholy.cb.dao.TDeviceMapper;
+import com.soholy.cb.entity.TDevice;
+import com.soholy.cb.entity.TDeviceDataWifi;
+import com.soholy.cb.entity.app.TaskType;
+import com.soholy.cb.entity.cdoec.*;
+import com.soholy.cb.entity.iot.deviceManager.UpdateDeviceInfoReqDTO;
+import com.soholy.cb.service.TDeviceIotService;
+import com.soholy.cb.service.app.AuthService;
+import com.soholy.cb.service.app.ManageService;
+import com.soholy.cb.utils.HttpClientUtil;
+import lombok.extern.java.Log;
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.*;
+
+@Log
+@Service
+public class TDeviceIotServiceImpl implements TDeviceIotService {
+
+    private static final Logger logger = LoggerFactory.getLogger(TDeviceIotServiceImpl.class);
+
+    @Autowired
+    private TDeviceMapper tDeviceMapper;
+
+    @Autowired
+    private IotPropertiesConfig conf;
+
+    @Autowired
+    private AuthService authService;
+
+    @Autowired
+    private ManageService managerService;
+
+    @Override
+    public List<TDevice> findDevicesByIotId(String deviceIdIot) {
+        if (deviceIdIot != null)
+            return tDeviceMapper.selectList(Wrappers.<TDevice>lambdaQuery().eq(TDevice::getDeviceIdIot, deviceIdIot));
+        return null;
+    }
+
+    /**
+     * @param uploadBean
+     * @return
+     * @Description (数据组装)
+     */
+    public CallBackData dataPrepare(UploadBean uploadBean) {
+        if (uploadBean == null) {
+            return null;
+        }
+        CallBackData parasData = new CallBackData();// 需要保存的记录
+
+        TDevice device = (TDevice) uploadBean.getT();
+        parasData.setDeviceNo(device.getDeviceNumber());
+        parasData.setQuantity(uploadBean.getElectricQuantity());
+        parasData.setDataTime(LocalDateTime.now());
+        parasData.setUploadTime(uploadBean.getUpLoadTime().toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime());
+        parasData.setCreateDate(LocalDateTime.now());
+        parasData.setId(UUID.randomUUID().toString());
+        parasData.setTraceId(device.getTraceId() != null ? device.getTraceId() : "0");
+        parasData.setIccid(uploadBean.getICCID());
+
+        int dataType = 0;// 上传的数据类型
+        if (uploadBean instanceof WifiUpload) {
+            WifiUpload wifiUpload = (WifiUpload) uploadBean;
+            List<TDeviceDataWifi> dwifiDataList = new ArrayList<TDeviceDataWifi>();
+            for (WifiLocation wifiLocation : wifiUpload.getWifiLocation()) {
+                TDeviceDataWifi wifi = new TDeviceDataWifi();
+                wifi.setDeviceNo(Long.valueOf(device.getDeviceNumber()));
+                wifi.setDeviceDataWifiId(UUID.randomUUID().toString());
+                wifi.setCreationTime(LocalDateTime.now());
+                wifi.setBssid(wifiLocation.getBssid());
+                wifi.setDeviceDataId(parasData.getId());
+                wifi.setRssi(wifiLocation.getRssi());
+                dwifiDataList.add(wifi);
+            }
+            parasData.settDeviceDataWifis(dwifiDataList);
+            dataType = 1;
+        } else if (uploadBean instanceof GpsUpload) {
+            GpsUpload gpsUpload = (GpsUpload) uploadBean;
+            parasData.setLat(Double.valueOf(gpsUpload.getLatitude()));
+            parasData.setLng(Double.valueOf(gpsUpload.getLongitude()));
+            dataType = 0;
+        } else if (uploadBean instanceof WarnUpload) {
+            WarnUpload warnUpload = (WarnUpload) uploadBean;
+            warnUpload.setWarnTime(uploadBean.getUpLoadTime());
+            dataType = 3;
+        } else if (uploadBean instanceof SimpleUpload) {
+            SimpleUpload simpleUpload = (SimpleUpload) uploadBean;
+            dataType = 2;
+        } else if (uploadBean instanceof StartUpBean) {
+            StartUpBean startUpBean = (StartUpBean) uploadBean;
+            dataType = 4;
+        } else {
+            log.info("数据上传标识码解析错误！");
+            return null;
+        }
+        parasData.setDataType(dataType);
+
+        return parasData;
+    }
+
+
+    @Override
+    public boolean modifyDeviceInfo(String deviceIdIot, String imei) throws Exception {
+        if (StringUtils.isBlank(deviceIdIot)) {
+            logger.warn("modifyDeviceInfo 方法参数有误");
+            return false;
+        }
+        String url = authService.iotServerBaseUrl() + ConstantIot.MODIFY_DEVICE_INFO + "/{deviceId}";
+        url = url.replace("{deviceId}", deviceIdIot);
+
+        Map<String, String> headers = authService.setAuthentication();
+
+        UpdateDeviceInfoReqDTO dto = new UpdateDeviceInfoReqDTO();
+        dto.setDeviceType(conf.getDeviceType());
+        dto.setManufacturerId(conf.getManufacturerId());
+        dto.setManufacturerName(conf.getManufacturerId());
+//        dto.setMute("FALSE");
+        dto.setProtocolType("CoAP");
+        dto.setName(imei);
+        dto.setLocation("Shenzhen");
+        dto.setModel(conf.getModel());
+        HttpClientUtil.HttpResult resp = HttpClientUtil.executeHttpParams(url, "PUT", null, headers, JSON.toJSONString(dto), null);
+
+        if (resp == null || resp.getStatusCode() != 204) {
+            logger.error("setEncryption error,result statusCode:" + resp.getStatusCode());
+            return false;
+        }
+        return true;
+    }
+
+
+    public void registerList(List<Long> deviceIdList, int cmdValue) throws Exception {
+        String taskName = Calendar.getInstance().getTime().toString();
+
+        String url = authService.iotServerBaseUrl() + ConstantIot.CREATE_TASK_ALL;
+        Map<String, String> headers = authService.setAuthentication();
+
+        JSONObject jsonObject = new JSONObject();
+        jsonObject.put("appId", authService.iotServerBaseUrl() + conf.getAppid());
+        jsonObject.put("timeout", 9999999);// 超时时间
+        jsonObject.put("taskName", taskName);
+        jsonObject.put("taskType", "DeviceCmd");
+
+        JSONObject param = new JSONObject();
+        TaskType ttype = TaskType.DeviceList;// 批量命令类型
+        param.put("type", ttype);
+        if (TaskType.DeviceType.equals(ttype)) {
+            param.put("deviceType", ttype);// 设备类型
+        } else if (TaskType.DeviceArea.equals(ttype)) {
+            param.put("deviceLocation", ttype);// 设备位置
+        } else if (TaskType.GroupList.equals(ttype)) {
+            param.put("groupList", ttype);// 组名字列表 List<String>
+        } else if (TaskType.DeviceList.equals(ttype)) {
+            List<TDevice> tdeviceList = tDeviceMapper.selectBatchIds(deviceIdList);
+            List<String> tdeviceNumList = new ArrayList<>();
+            for (TDevice tDevice : tdeviceList) {// 设备型号
+                tdeviceNumList.add(tDevice.getDeviceNumber());
+            }
+            param.put("deviceList", tdeviceNumList);// 组名字列表 List<String> deviceId列表
+
+        }
+
+        JSONObject CommandDTOV1 = new JSONObject();
+        CommandDTOV1.put("serviceId", conf.getServiceId());
+        CommandDTOV1.put("method", conf.getCmdName());// 命令名称，服务属性等
+        JSONObject parasNode = new JSONObject();
+        parasNode.put(conf.getCmdProp(), cmdValue);
+        CommandDTOV1.put("paras", parasNode);// 命令参数 jsonString
+
+        param.put("command", CommandDTOV1);// 组名字列表 List<String>
+
+        JSONArray deviceList = new JSONArray();
+        // deviceList.add(e)
+
+        param.put("deviceList", deviceList);// deviceId列表
+
+        jsonObject.put("param", param);
+        HttpClientUtil.HttpResult resp = HttpClientUtil.executeHttpParams(url, "PUT", null, headers, jsonObject, null);
+
+    }
+
+
+    @Override
+    public boolean deleteDeviceByIotId(String deviceIdIot) throws Exception {
+        if (tDeviceMapper.delete(Wrappers.<TDevice>lambdaQuery().eq(TDevice::getDeviceIdIot, deviceIdIot)) >= 0) {
+            return managerService.deleteDevice(deviceIdIot);
+        }
+        return false;
+    }
+
+    @Override
+    public void logout(String deviceIotId) {
+        if (StringUtils.isNotBlank(deviceIotId)) {
+            //数据删除
+            LambdaQueryWrapper<TDevice> wrapper = Wrappers.<TDevice>lambdaQuery().eq(TDevice::getDeviceIdIot, deviceIotId);
+            if (0 != tDeviceMapper.selectCount(wrapper)) {
+                if (0 == tDeviceMapper.delete(wrapper)) {
+                    throw new RuntimeException("设备删除失败");
+                }
+            }
+
+            //iot删除
+            try {
+                managerService.deleteDevice(deviceIotId);
+            } catch (Exception e) {
+                e.printStackTrace();
+                throw new RuntimeException("iot设备删除失败");
+            }
+        }
+    }
+
+    @Override
+    public TDevice register(String imei, String deviceBrand, String deviceBatch) throws Exception {
+        JSONObject result = managerService.register(imei, null, null, 0);
+        if (result != null) {
+            String deviceIdIot = result.getString("deviceId");
+            String verifyCode = result.getString("verifyCode");
+            String psk = result.getString("psk");
+
+            TDevice tDevice = new TDevice();
+            tDevice.setDeviceNumber(imei);
+            tDevice.setDeviceCode(StringUtils.isBlank(deviceBrand) ? deviceBrand : "无");
+            tDevice.setDeviceModel(StringUtils.isBlank(deviceBrand) ? deviceBrand : "无");
+            tDevice.setStatus(0);
+            tDevice.setCreateTime(LocalDateTime.now());
+            tDevice.setDeviceName(imei);
+
+
+            //TODO  实际不能要
+            tDevice.setDeviceCalss(1);
+            tDevice.setLatitude(0d);
+            tDevice.setLongitude(0d);
+            tDevice.setInstaller(System.getenv().get("USERNAME"));
+            tDevice.setCommunicateMode(1);
+            tDevice.setDeviceProductionNumber(System.getenv("COMPUTERNAME"));
+            tDevice.setRegionId(System.getenv("USERDOMAIN"));
+            tDevice.setIccid("無");
+            tDevice.setDeviceIdIot("無");
+            tDevice.setInstallUnit(System.getenv("USERDNSDOMAIN"));
+            tDevice.setSite("無");
+            tDevice.setUserId(1);
+
+            //插入设备并且修改设备信息
+
+            if (tDeviceMapper.insert(tDevice) == 1 && this.modifyDeviceInfo(deviceIdIot, imei)) {
+                return tDevice;
+            }
+            this.deleteDeviceByIotId(deviceIdIot);
+            throw new RuntimeException();
+        }
+        return null;
+    }
+
+    @Override
+    public List<TDevice> registerAll(List<TDevice> deviceList) throws Exception {
+        if (deviceList != null && deviceList.size() > 0) {
+            for (TDevice tDevice : deviceList) {
+                JSONObject result = managerService.register(tDevice.getDeviceNumber(), null, null, 0);
+                if (result != null) {// 注册成功
+                    String deviceIdIot = result.getString("deviceId");
+                    this.modifyDeviceInfo(deviceIdIot, deviceIdIot);//完善设备信息
+                    String verifyCode = result.getString("verifyCode");
+                    String psk = result.getString("psk");
+                    tDevice.setDeviceIdIot(deviceIdIot);
+                } else {
+                    logger.error("设备注册失败！ 设备信息:" + tDevice);
+                    return null;
+                }
+            }
+            return deviceList;
+        }
+        return null;
+    }
+
+}

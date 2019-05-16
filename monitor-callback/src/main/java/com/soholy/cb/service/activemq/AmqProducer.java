@@ -1,0 +1,129 @@
+package com.soholy.cb.service.activemq;
+
+import com.alibaba.fastjson.JSONArray;
+import com.alibaba.fastjson.JSONObject;
+import com.soholy.cb.common.ApplicationContextProvider;
+import com.soholy.cb.entity.TDevice;
+import com.soholy.cb.entity.cdoec.*;
+import com.soholy.cb.service.AcmqService;
+import com.soholy.cb.service.TDeviceCommandService;
+import com.soholy.cb.service.TDeviceIotService;
+import com.soholy.cb.service.codec.CodecService;
+import com.soholy.cb.service.log.LogService;
+import lombok.extern.java.Log;
+
+import java.io.UnsupportedEncodingException;
+import java.util.List;
+import java.util.Optional;
+
+@Log
+public class AmqProducer implements Runnable {
+
+    private static final String DECODE_CHARSET = "ISO8859-1";
+
+    private String codecParamName;
+    private JSONObject json;
+    private TDeviceIotService tDeviceIotService;
+    private TDeviceCommandService tDeviceCommandService;
+    private CodecService codecService;
+    private LogService logService;
+
+    private AcmqService acmqService;
+
+    public AmqProducer(JSONObject json, String codecParamName) {
+        this.json = json;
+        this.codecParamName = codecParamName;
+
+        this.tDeviceIotService = ApplicationContextProvider.getBean(TDeviceIotService.class);
+        this.tDeviceCommandService = ApplicationContextProvider.getBean(TDeviceCommandService.class);
+
+        this.codecService = ApplicationContextProvider.getBean(CodecService.class);
+        this.logService = ApplicationContextProvider.getBean(LogService.class);
+
+        this.acmqService = ApplicationContextProvider.getBean(AcmqService.class);
+
+    }
+
+    @Override
+    public void run() {
+        try {
+            String requestId = json.getString("requestId");
+            String deviceIdIot = json.getString("deviceId");
+            String gatewayId = json.getString("gatewayId");
+            JSONArray jsonArray = json.getJSONArray("services");
+
+            // 根据设备验证码查询设备信息
+            List<TDevice> tdeviceList = tDeviceIotService.findDevicesByIotId(deviceIdIot);
+            TDevice device = null;
+            // 判断设备是否在系统中已存在
+            Optional<TDevice> first = tdeviceList.stream().findFirst();
+            if (first.isPresent()) {
+                device = first.get();
+                device.setTraceId(device.getTraceId() != null ? device.getTraceId() : "0");
+            } else {
+                log.info("设备上传数据设备id不存在！");
+                return;
+            }
+
+            log.info("receive device push deviceIdIot:" + deviceIdIot);
+            log.info("deviceId msg input:" + json);
+            log.info("requestId:" + requestId);
+            log.info("gatewayId:" + gatewayId);
+            //设备批量数据处理
+            for (int i = 0; jsonArray != null && i < jsonArray.size(); i++) {// 遍历设备数据
+                JSONObject jsonObject = jsonArray.getJSONObject(i);
+                String serviceId = jsonObject.getString("serviceId");
+                String serviceType = jsonObject.getString("serviceType");
+                String eventTime = jsonObject.getString("eventTime");
+                JSONObject dataNode = jsonObject.getJSONObject("data");
+                String dataStr = dataNode.getString(codecParamName);
+                byte[] inputBinary = null;
+                try {
+                    inputBinary = dataStr.getBytes(DECODE_CHARSET);
+                } catch (UnsupportedEncodingException e) {
+                    e.printStackTrace();
+                    log.warning(e.getMessage());
+                    return;
+                }
+                log.info("serviceId:" + serviceId);
+                log.info("serviceType:" + serviceType);
+                log.info("eventTime:" + eventTime);
+
+                //数据解析
+                CodecBean codecBean = codecService.decodec(inputBinary);
+
+                //日志输出
+                logService.printLog(codecBean, inputBinary, null);
+
+                if (codecBean != null) {
+                    UploadBean uploadBean = codecBean.getUploadBean();
+                    //成功解析请求的数据
+                    if (uploadBean != null && uploadBean.getImei() != null) {
+                        uploadBean.setT(device);
+                        CallBackData data = tDeviceIotService.dataPrepare(uploadBean);
+                        data.settDevice(device);
+                        if (uploadBean instanceof StartUpBean) {
+                            //开机数据直接回复
+                            tDeviceCommandService.resStart(data, device);
+                        }
+                        acmqService.dataPushMq(json.toJSONString(data));
+                    }
+
+                    DecodeRsp decodeRsp = codecBean.getDecodeRsp();
+                    //设备对命令的响应 上报结果
+                    if (decodeRsp != null && decodeRsp.getIMEI() != null) {
+                        decodeRsp.setT(device);
+                        tDeviceCommandService.cmdResHandle(decodeRsp);//命令响应处理
+                    }
+
+                }
+            }
+
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+
+}

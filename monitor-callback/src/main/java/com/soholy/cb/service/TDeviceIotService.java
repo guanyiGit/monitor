@@ -1,0 +1,69 @@
+package com.soholy.cb.service;
+
+import com.soholy.cb.entity.TDevice;
+import com.soholy.cb.entity.cdoec.CallBackData;
+import com.soholy.cb.entity.cdoec.UploadBean;
+
+import java.util.List;
+
+public interface TDeviceIotService {
+
+    /**
+     * 查询设备信息
+     *
+     * @param deviceIdIot
+     * @return
+     */
+    List<TDevice> findDevicesByIotId(String deviceIdIot);
+
+    /**
+     * 数据
+     *
+     * @param uploadBean
+     * @return
+     */
+    CallBackData dataPrepare(UploadBean uploadBean);
+
+
+    /**
+     * 修改设备信息
+     *
+     * @param deviceIdIot
+     * @param imei
+     * @return
+     */
+    public boolean modifyDeviceInfo(String deviceIdIot, String imei) throws Exception;
+
+
+    /**
+     * @param imei
+     * @param deviceBrand 品牌信息 可没有
+     * @param deviceBatch 批次信息 可没有
+     * @return
+     * @throws Exception
+     */
+    TDevice register(String imei, String deviceBrand, String deviceBatch) throws Exception;
+
+
+    /**
+     * @param deviceList
+     * @return 注册后的设备信息
+     * @Description (批量注册设备)
+     */
+    public List<TDevice> registerAll(List<TDevice> deviceList) throws Exception;
+
+    /**
+     * 设备删除
+     *
+     * @param deviceIdIot
+     * @return
+     */
+    boolean deleteDeviceByIotId(String deviceIdIot) throws Exception;
+
+    /**
+     * 设备删除 平台和数据库同删除
+     * @param deviceIotId
+     * @return
+     */
+    void logout(String deviceIotId);
+}
