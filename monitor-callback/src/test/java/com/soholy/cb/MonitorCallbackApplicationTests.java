@@ -8,12 +8,13 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.junit4.SpringRunner;
 
 @RunWith(SpringRunner.class)
-@SpringBootTest
+@SpringBootTest(classes = MonitorCallbackApplication.class)
 public class MonitorCallbackApplicationTests {
 
 
     @Autowired
     AppService appService;
+
     @Test
     public void contextLoads() throws Exception {
         boolean b = appService.deleteSubs();

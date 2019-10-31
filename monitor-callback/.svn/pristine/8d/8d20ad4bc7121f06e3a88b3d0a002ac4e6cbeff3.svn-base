@@ -1,0 +1,104 @@
+global
+	log 			127.0.0.1 local2  notice
+	maxconn 		4096
+	user 			nobody 
+	group 			nobody 
+	daemon 
+	nbproc 			1
+	pidfile 		/var/run/haproxy.pid
+	tune.ssl.default-dh-param 2048       
+defaults
+	mode 			http 
+	retries 		3
+	timeout connect 	10s 
+	timeout client 		20s 
+	timeout server 		30s 
+	timeout check 		5s
+	option			httplog
+
+frontend https_front
+	bind 		*:8082 ssl crt /opt/guan_yi_ce_shi_yongde/haproxy.pem
+	mode		http
+	option 		httpclose
+	option 		forwardfor
+	reqadd 		X-Forwarded-Proto:\ https
+
+	acl 		url_ms url_beg  -i /callback-fit
+	use_backend 	nm_https if url_ms
+
+	acl             url_rs url_beg  -i /monitor
+        use_backend     mg_https if url_rs
+
+	acl             url_16 url_beg  -i /s16
+        use_backend     sv16 if url_16
+
+
+	default_backend nm_https
+
+backend nm_https
+	mode 		http
+	balance 	roundrobin
+	cookie 		SERVERID insert indirect nocache
+	server 		nm 192.168.0.69:18082 weight 1 maxconn 1000 check cookie nm
+
+backend mg_https
+        mode            http
+        balance         roundrobin
+        cookie          SERVERID insert indirect nocache
+        server          mg 192.168.0.69:18083 weight 1 maxconn 1000 check cookie mg
+
+backend sv16
+        mode            http
+        balance         roundrobin
+        cookie          SERVERID insert indirect nocache
+        server          s16 192.168.0.16:8082 weight 1 maxconn 1000 check cookie s16
+
+listen status_listen     # 定义一个名为status_listen的部分
+    bind 0.0.0.0:50000
+    # 定义监听的套接字
+    mode http
+    # 定义为HTTP模式
+    log global
+    # 继承global中log的定义
+    stats refresh 30s
+    # stats是haproxy的一个统计页面的套接字，该参数设置统计页面的刷新间隔为30s
+    stats uri /stats
+    # 设置统计页面的uri为/admin?stats
+    stats realm Private lands
+    # 设置统计页面认证时的提示内容
+    stats auth admin:admin
+    # 设置统计页面认证的用户和密码，如果要设置多个，另起一行写入即可
+    stats hide-version
+    # 隐藏统计页面上的haproxy版本信息
+    stats admin if TRUE
+    #启用stats page中的管理功能
+
+
+#http负载
+frontend http_proxy
+        bind            0.0.0.0:58081
+        mode            http
+        option          httpclose
+        option          forwardfor
+
+        acl             url_mds url_beg  -i /s16
+        use_backend     svd16 if url_mds
+	
+	    default_backend	 svd69
+
+backend svd69
+        mode            http
+        balance         roundrobin
+        cookie          SERVERID insert indirect nocache
+        server          sd69 192.168.0.69:8081 weight 1 maxconn 1000 check cookie sd69
+
+backend svd16
+        #复写模块
+	    reqrep          ^(.*)/s16(.*) \1\2
+        mode            http
+        balance         roundrobin
+        cookie          SERVERID insert indirect nocache
+        server          sd16 192.168.0.16:8081 weight 1 maxconn 1000 check cookie sd16
+
+
+

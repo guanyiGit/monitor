@@ -1,0 +1,8 @@
+<component name="ArtifactManager">
+  <artifact type="war" name="monitor-callback:war">
+    <output-path>$PROJECT_DIR$/monitor-callback/target</output-path>
+    <root id="archive" name="monitor-callback.war">
+      <element id="artifact" artifact-name="monitor-callback:war exploded" />
+    </root>
+  </artifact>
+</component>
